@@ -10,7 +10,7 @@ import os
 app = FastAPI(
     title="Smart Media Downloader API",
     description="Download media links from Instagram, YouTube, TikTok, etc.",
-    version="2.0"
+    version="2.1"
 )
 
 # ✅ Enable CORS for public API / frontend / bots
@@ -21,11 +21,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ✅ Handle Render health checks (HEAD requests)
+@app.head("/")
+def health_check():
+    """Handle HEAD requests for Render uptime checks."""
+    return {"status": "ok"}
+
 @app.get("/")
 def home():
-    """Root endpoint to check if API is working."""
+    """Root endpoint to verify API is online."""
     return {"message": "Welcome to Smart Media Downloader API 🚀"}
-
 
 @app.get("/download")
 def download_media(url: str):
