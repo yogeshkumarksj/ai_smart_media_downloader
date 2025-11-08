@@ -3,60 +3,52 @@ import re
 import yt_dlp
 import instaloader
 import asyncio
+import browser_cookie3
+import threading
+import time
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-import browser_cookie3
 
-def auto_update_cookies():
-    """Fetch valid cookies from local browser and save as cookies.txt"""
-    try:
-        cookies = browser_cookie3.chrome(domain_name=".youtube.com")
-        with open("cookies.txt", "w", encoding="utf-8") as f:
-            f.write("# Netscape HTTP Cookie File\n")
-            for cookie in cookies:
-                f.write(
-                    f"{cookie.domain}\tTRUE\t/\tFALSE\t{int(cookie.expires or 0)}\t{cookie.name}\t{cookie.value}\n"
-                )
-        print("✅ Cookies successfully updated from browser.")
-    except Exception as e:
-        print(f"⚠️ Failed to update cookies automatically: {e}")
-
-
-# === Configuration ===
+# === CONFIGURATION ===
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 BASE_URL = os.getenv("BASE_URL", "https://ai-smart-media-downloader.onrender.com").rstrip("/")
-
-app = FastAPI(title="Smart Media Downloader", version="3.5")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 COOKIES_PATH = "cookies.txt"
 TEMP_DIR = "downloads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 
-# ---------- Helper Functions ----------
+app = FastAPI(title="Smart Media Downloader AI", version="4.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+# ---------- COOKIES AUTO-UPDATE ----------
+def write_cookie_file(cookies):
+    with open(COOKIES_PATH, "w", encoding="utf-8") as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        for cookie in cookies:
+            f.write(
+                f"{cookie.domain}\tTRUE\t{cookie.path}\t{'TRUE' if cookie.secure else 'FALSE'}\t{int(cookie.expires or 0)}\t{cookie.name}\t{cookie.value}\n"
+            )
+
+def refresh_cookies():
+    """Fetch fresh YouTube cookies every 24h."""
+    while True:
+        try:
+            cookies = browser_cookie3.chrome(domain_name=".youtube.com")
+            write_cookie_file(cookies)
+            print("✅ YouTube cookies refreshed successfully")
+        except Exception as e:
+            print(f"⚠️ Cookie refresh failed: {e}")
+        time.sleep(86400)  # 24 hours
 
 def is_valid_cookie_file(path: str) -> bool:
     if not os.path.exists(path):
         return False
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        head = f.read(200)
-        return "# Netscape HTTP Cookie File" in head or "Netscape" in head
-
-
-def normalize_url(url: str) -> str:
-    """Convert shorts or mobile links into watch?v= format."""
-    if "shorts/" in url:
-        video_id = re.search(r"shorts/([A-Za-z0-9_-]+)", url)
-        if video_id:
-            return f"https://www.youtube.com/watch?v={video_id.group(1)}"
-    if "m.youtube.com" in url:
-        return url.replace("m.youtube.com", "www.youtube.com")
-    return url
-
+        return "# Netscape" in f.read(200)
 
 def get_cookie_path() -> str | None:
     if is_valid_cookie_file(COOKIES_PATH):
@@ -65,40 +57,23 @@ def get_cookie_path() -> str | None:
     print("⚠️ No valid cookies.txt found")
     return None
 
+threading.Thread(target=refresh_cookies, daemon=True).start()
 
-def download_video(url: str) -> str:
-    """Download video and return local file path."""
-    cookie_path = get_cookie_path()
-    output_path = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
 
-    ydl_opts = {
-        "outtmpl": output_path,
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "format": "bestvideo+bestaudio/best",
-        "noplaylist": True,
-        "nocheckcertificate": True,
-    }
-
-    if cookie_path:
-        ydl_opts["cookiefile"] = cookie_path
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-            if not file_path.endswith(".mp4"):
-                base = os.path.splitext(file_path)[0]
-                new_path = base + ".mp4"
-                os.rename(file_path, new_path)
-                file_path = new_path
-            return file_path
-    except Exception as e:
-        raise Exception(f"Download failed: {e}")
+# ---------- HELPERS ----------
+def normalize_url(url: str) -> str:
+    """Convert Shorts or mobile URLs to standard format."""
+    if "shorts/" in url:
+        match = re.search(r"shorts/([A-Za-z0-9_-]+)", url)
+        if match:
+            return f"https://www.youtube.com/watch?v={match.group(1)}"
+    if "m.youtube.com" in url:
+        return url.replace("m.youtube.com", "www.youtube.com")
+    return url
 
 
 def get_video_info(url: str):
-    """Fetch video metadata only (no download)."""
+    """Fetch video metadata only."""
     url = normalize_url(url)
     cookie_path = get_cookie_path()
 
@@ -106,7 +81,14 @@ def get_video_info(url: str):
         "quiet": True,
         "skip_download": True,
         "format": "best",
+        "noplaylist": True,
         "nocheckcertificate": True,
+        "retries": 3,
+        "geo_bypass": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
 
     if cookie_path:
@@ -125,8 +107,40 @@ def get_video_info(url: str):
             raise Exception(f"Error fetching info: {e}")
 
 
-# ---------- Telegram Webhook ----------
+def download_video(url: str) -> str:
+    """Download video and return its local file path."""
+    cookie_path = get_cookie_path()
+    output_path = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
 
+    ydl_opts = {
+        "outtmpl": output_path,
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "geo_bypass": True,
+        "retries": 3,
+    }
+
+    if cookie_path:
+        ydl_opts["cookiefile"] = cookie_path
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=True)
+            file_path = ydl.prepare_filename(info)
+            if not file_path.endswith(".mp4"):
+                base = os.path.splitext(file_path)[0]
+                new_path = base + ".mp4"
+                os.rename(file_path, new_path)
+                file_path = new_path
+            return file_path
+        except Exception as e:
+            raise Exception(f"Download failed: {e}")
+
+
+# ---------- TELEGRAM WEBHOOK ----------
 @app.get("/setwebhook")
 async def set_webhook():
     if not bot:
@@ -157,8 +171,8 @@ async def telegram_webhook(request: Request):
     if text.startswith("/start"):
         await bot.send_message(
             chat_id,
-            "👋 Welcome to *Smart Media Downloader AI Bot*!\n\n"
-            "Send me any YouTube, Shorts, Instagram, or TikTok link to download instantly 📽️",
+            "👋 *Welcome to Smart Media Downloader Bot*\n\n"
+            "Just send me a YouTube, Shorts, Instagram, or TikTok link — and I’ll give you a direct download link 🎥",
             parse_mode="Markdown",
         )
         return JSONResponse({"ok": True})
@@ -174,7 +188,6 @@ async def telegram_webhook(request: Request):
         video_id = info.get("id")
         title = info.get("title")
         thumb = info.get("thumbnail")
-
         download_url = f"{BASE_URL}/file/{video_id}"
 
         caption = (
@@ -202,25 +215,24 @@ async def telegram_webhook(request: Request):
                     [[InlineKeyboardButton("📥 Download MP4", url=download_url)]]
                 ),
             )
+
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Error: {str(e)}")
 
     return JSONResponse({"ok": True})
 
 
-# ---------- Direct File Download ----------
-
+# ---------- FILE STREAM ----------
 @app.get("/file/{video_id}")
-def stream_video(video_id: str):
-    """Serve the downloaded video directly."""
+def serve_video(video_id: str):
+    """Serve or re-download the requested video."""
     try:
-        pattern = re.compile(r"[A-Za-z0-9_-]{5,}")
+        pattern = re.compile(r"^[A-Za-z0-9_-]{5,}$")
         if not pattern.match(video_id):
             return JSONResponse({"error": "Invalid video ID"}, status_code=400)
 
         file_path = os.path.join(TEMP_DIR, f"{video_id}.mp4")
         if not os.path.exists(file_path):
-            # Redownload if not cached
             url = f"https://www.youtube.com/watch?v={video_id}"
             file_path = download_video(url)
 
@@ -229,11 +241,10 @@ def stream_video(video_id: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# ---------- API & Health ----------
-
+# ---------- HEALTH & API ----------
 @app.get("/")
 def home():
-    return {"message": "Smart Media Downloader + Telegram Bot is running 🚀"}
+    return {"message": "🚀 Smart Media Downloader + Telegram Bot is running."}
 
 
 @app.get("/download")
@@ -243,4 +254,3 @@ def download_endpoint(url: str):
         return info
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-
