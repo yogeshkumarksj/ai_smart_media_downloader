@@ -1,12 +1,11 @@
 # 🐍 Use an official lightweight Python base image
 FROM python:3.11-slim
 
-# 🧩 System setup: Install ffmpeg + dependencies required by browser_cookie3
+# 🧩 System setup: Install ffmpeg + minimal dependencies for yt_dlp & browser_cookie3
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
         libnss3 \
-        libgconf-2-4 \
         libxss1 \
         libappindicator3-1 \
         fonts-liberation \
@@ -28,16 +27,16 @@ WORKDIR /app
 # 📦 Copy project files to container
 COPY . .
 
-# 🧠 Install Python dependencies
+# 🧠 Install Python dependencies (with browser-cookie3 fix)
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir browser-cookie3==0.19.1
 
-# 🔥 Optional: Pre-create cookies.txt if missing
+# 🧾 Optional: Create an empty cookies.txt so yt_dlp won’t fail if missing
 RUN echo "# Netscape HTTP Cookie File" > /app/cookies.txt
 
-# 🌐 Expose FastAPI / Uvicorn port
+# 🌐 Expose FastAPI port
 EXPOSE 10000
 
-# 🚀 Start FastAPI app with Uvicorn (production mode)
+# 🚀 Start FastAPI app (with proxy headers for Render)
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000", "--proxy-headers"]
