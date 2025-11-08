@@ -1,3 +1,4 @@
-# HTTP Cookie File
-www.youtube.com	FALSE	/	FALSE	1700000000	VISITOR_INFO1_LIVE	abcdef
-
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	FALSE	1735584000	VISITOR_INFO1_LIVE	abcdef
+.youtube.com	TRUE	/	FALSE	1735584000	YSC	xyz123
+.instagram.com	TRUE	/	FALSE	1735584000	sessionid	12345abcde
