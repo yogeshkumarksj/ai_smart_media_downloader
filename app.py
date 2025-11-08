@@ -7,6 +7,22 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+import browser_cookie3
+
+def auto_update_cookies():
+    """Fetch valid cookies from local browser and save as cookies.txt"""
+    try:
+        cookies = browser_cookie3.chrome(domain_name=".youtube.com")
+        with open("cookies.txt", "w", encoding="utf-8") as f:
+            f.write("# Netscape HTTP Cookie File\n")
+            for cookie in cookies:
+                f.write(
+                    f"{cookie.domain}\tTRUE\t/\tFALSE\t{int(cookie.expires or 0)}\t{cookie.name}\t{cookie.value}\n"
+                )
+        print("✅ Cookies successfully updated from browser.")
+    except Exception as e:
+        print(f"⚠️ Failed to update cookies automatically: {e}")
+
 
 # === Configuration ===
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -227,3 +243,4 @@ def download_endpoint(url: str):
         return info
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
