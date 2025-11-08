@@ -78,18 +78,24 @@ def get_video_info(url: str):
     cookie_path = get_cookie_path()
 
     ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "format": "best",
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "retries": 3,
-        "geo_bypass": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
+    "quiet": True,
+    "skip_download": True,  # or False if downloading
+    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+    "merge_output_format": "mp4",
+    "noplaylist": True,
+    "nocheckcertificate": True,
+    "geo_bypass": True,
+    "retries": 3,
+    "age_limit": 0,
+    "extract_flat": False,
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.youtube.com/",
+    },
+    "cookiefile": "cookies.txt",  # absolute path also fine
+}
+
 
     if cookie_path:
         ydl_opts["cookiefile"] = cookie_path
@@ -254,3 +260,4 @@ def download_endpoint(url: str):
         return info
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
