@@ -4,38 +4,26 @@ import yt_dlp
 import instaloader
 import asyncio
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# === Environment Variables ===
+# === Configuration ===
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 BASE_URL = os.getenv("BASE_URL", "https://ai-smart-media-downloader.onrender.com").rstrip("/")
 
-# === FastAPI setup ===
-app = FastAPI(
-    title="Smart Media Downloader API + Telegram (Webhook)",
-    description="Download videos from Instagram, YouTube, TikTok, Facebook, and more.",
-    version="3.1",
-)
+app = FastAPI(title="Smart Media Downloader", version="3.5")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# === Telegram Bot setup ===
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
-
-
-# ========== HELPER FUNCTIONS ==========
-
 COOKIES_PATH = "cookies.txt"
+TEMP_DIR = "downloads"
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+
+# ---------- Helper Functions ----------
 
 def is_valid_cookie_file(path: str) -> bool:
-    """Check if the file exists and is in Netscape format."""
     if not os.path.exists(path):
         return False
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -43,88 +31,95 @@ def is_valid_cookie_file(path: str) -> bool:
         return "# Netscape HTTP Cookie File" in head or "Netscape" in head
 
 
+def normalize_url(url: str) -> str:
+    """Convert shorts or mobile links into watch?v= format."""
+    if "shorts/" in url:
+        video_id = re.search(r"shorts/([A-Za-z0-9_-]+)", url)
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id.group(1)}"
+    if "m.youtube.com" in url:
+        return url.replace("m.youtube.com", "www.youtube.com")
+    return url
+
+
 def get_cookie_path() -> str | None:
-    """Return valid cookies file path or None."""
     if is_valid_cookie_file(COOKIES_PATH):
-        print("✅ Using valid cookies.txt for authentication")
+        print("✅ Using valid cookies.txt")
         return COOKIES_PATH
-    print("⚠️ No valid cookies.txt found or invalid format — continuing without authentication")
+    print("⚠️ No valid cookies.txt found")
     return None
 
 
-def get_media_info(url: str):
-    """Extract media details without downloading."""
+def download_video(url: str) -> str:
+    """Download video and return local file path."""
+    cookie_path = get_cookie_path()
+    output_path = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
+
+    ydl_opts = {
+        "outtmpl": output_path,
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "format": "bestvideo+bestaudio/best",
+        "noplaylist": True,
+        "nocheckcertificate": True,
+    }
+
+    if cookie_path:
+        ydl_opts["cookiefile"] = cookie_path
+
     try:
-        # ========== Instagram ==========
-        if "instagram.com" in url:
-            shortcode = re.search(r"reel/([A-Za-z0-9_-]+)/", url)
-            if not shortcode:
-                raise ValueError("Invalid Instagram Reel URL")
-
-            shortcode = shortcode.group(1)
-            loader = instaloader.Instaloader(
-                download_video_thumbnails=False,
-                save_metadata=False
-            )
-
-            cookie_path = get_cookie_path()
-            if cookie_path:
-                try:
-                    loader.load_session_from_file("instagram", filename=cookie_path)
-                except Exception:
-                    print("⚠️ Failed to load Instagram cookies — using public access")
-
-            post = instaloader.Post.from_shortcode(loader.context, shortcode)
-            return {
-                "platform": "Instagram",
-                "title": post.caption or "Instagram Reel",
-                "thumbnail": post.url,
-                "download_link": post.video_url if post.is_video else post.url,
-                "owner": post.owner_username,
-            }
-
-        # ========== YouTube / TikTok / Facebook / X ==========
-        cookie_path = get_cookie_path()
-
-        ydl_opts = {
-            "quiet": True,
-            "skip_download": True,
-            "format": "best[ext=mp4]/best",
-            "nocheckcertificate": True,
-        }
-
-        if cookie_path:
-            ydl_opts["cookiefile"] = cookie_path
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            file_path = ydl.prepare_filename(info)
+            if not file_path.endswith(".mp4"):
+                base = os.path.splitext(file_path)[0]
+                new_path = base + ".mp4"
+                os.rename(file_path, new_path)
+                file_path = new_path
+            return file_path
+    except Exception as e:
+        raise Exception(f"Download failed: {e}")
+
+
+def get_video_info(url: str):
+    """Fetch video metadata only (no download)."""
+    url = normalize_url(url)
+    cookie_path = get_cookie_path()
+
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "format": "best",
+        "nocheckcertificate": True,
+    }
+
+    if cookie_path:
+        ydl_opts["cookiefile"] = cookie_path
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
             info = ydl.extract_info(url, download=False)
             return {
-                "platform": info.get("extractor", "Unknown"),
+                "id": info.get("id"),
                 "title": info.get("title", "Untitled"),
                 "thumbnail": info.get("thumbnail"),
-                "download_link": info.get("url"),
+                "platform": info.get("extractor", "YouTube"),
             }
-
-    except Exception as e:
-        err = str(e)
-        if "Sign in to confirm" in err or "login" in err:
-            raise Exception("⚠️ This video requires login. Please update your cookies.txt with valid YouTube account cookies.")
-        raise Exception(f"Error fetching media info: {err}")
+        except Exception as e:
+            raise Exception(f"Error fetching info: {e}")
 
 
-# ========== TELEGRAM WEBHOOK ==========
+# ---------- Telegram Webhook ----------
 
 @app.get("/setwebhook")
 async def set_webhook():
-    """Manually call this once to connect Telegram bot to Render server."""
     if not bot:
-        return {"error": "TELEGRAM_BOT_TOKEN not set"}
-
+        return {"error": "Missing TELEGRAM_BOT_TOKEN"}
     webhook_url = f"{BASE_URL}/webhook"
     try:
         success = await bot.set_webhook(webhook_url)
         if success:
-            print(f"✅ Webhook set successfully at {webhook_url}")
+            print(f"✅ Webhook set at {webhook_url}")
         return {"success": success, "webhook_url": webhook_url}
     except Exception as e:
         return {"error": str(e)}
@@ -132,9 +127,8 @@ async def set_webhook():
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    """Handle Telegram messages via webhook."""
     if not bot:
-        return JSONResponse({"error": "Bot token missing"}, status_code=500)
+        return JSONResponse({"error": "Bot not configured"}, status_code=500)
 
     data = await request.json()
     message = data.get("message") or data.get("edited_message")
@@ -144,47 +138,43 @@ async def telegram_webhook(request: Request):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip() if "text" in message else ""
 
-    # /start command
     if text.startswith("/start"):
         await bot.send_message(
             chat_id,
-            "👋 Hi! I’m your Smart Media Downloader Bot.\n\n"
-            "Send me any YouTube, Instagram, or TikTok video link to get a download link instantly 🎥",
+            "👋 Welcome to *Smart Media Downloader AI Bot*!\n\n"
+            "Send me any YouTube, Shorts, Instagram, or TikTok link to download instantly 📽️",
+            parse_mode="Markdown",
         )
         return JSONResponse({"ok": True})
 
-    # Invalid text
-    if not text or not any(x in text for x in ["youtube", "youtu.be", "instagram", "tiktok", "facebook", "x.com"]):
+    if not any(x in text for x in ["youtube", "youtu.be", "instagram", "tiktok", "facebook"]):
         await bot.send_message(chat_id, "⚠️ Please send a valid media URL.")
         return JSONResponse({"ok": True})
 
-    # Notify user
     await bot.send_message(chat_id, "🔍 Fetching video info... Please wait ⏳")
 
-    # Fetch media info
     try:
-        info = get_media_info(text)
-    except Exception as e:
-        await bot.send_message(chat_id, f"❌ {str(e)}")
-        return JSONResponse({"ok": True})
+        info = get_video_info(text)
+        video_id = info.get("id")
+        title = info.get("title")
+        thumb = info.get("thumbnail")
 
-    # Prepare message
-    title = info.get("title", "Untitled")
-    platform = info.get("platform", "Unknown")
-    download_link = info.get("download_link")
-    thumbnail = info.get("thumbnail")
+        download_url = f"{BASE_URL}/file/{video_id}"
 
-    caption = f"🎬 *{title}*\n📱 Platform: {platform}\n🔗 [Download Video]({download_link})"
+        caption = (
+            f"🎬 *{title}*\n"
+            f"📱 Platform: {info.get('platform')}\n"
+            f"🔗 [Click to Download MP4]({download_url})"
+        )
 
-    try:
-        if thumbnail:
+        if thumb:
             await bot.send_photo(
                 chat_id=chat_id,
-                photo=thumbnail,
+                photo=thumb,
                 caption=caption,
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("📥 Download MP4", url=download_link)]]
+                    [[InlineKeyboardButton("📥 Download Now", url=download_url)]]
                 ),
             )
         else:
@@ -193,27 +183,47 @@ async def telegram_webhook(request: Request):
                 text=caption,
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("📥 Download MP4", url=download_link)]]
+                    [[InlineKeyboardButton("📥 Download MP4", url=download_url)]]
                 ),
             )
     except Exception as e:
-        await bot.send_message(chat_id, f"🎬 {title}\n📥 {download_link}\n\n⚠️ {str(e)}")
+        await bot.send_message(chat_id, f"❌ Error: {str(e)}")
 
     return JSONResponse({"ok": True})
 
 
-# ========== API ENDPOINTS ==========
+# ---------- Direct File Download ----------
+
+@app.get("/file/{video_id}")
+def stream_video(video_id: str):
+    """Serve the downloaded video directly."""
+    try:
+        pattern = re.compile(r"[A-Za-z0-9_-]{5,}")
+        if not pattern.match(video_id):
+            return JSONResponse({"error": "Invalid video ID"}, status_code=400)
+
+        file_path = os.path.join(TEMP_DIR, f"{video_id}.mp4")
+        if not os.path.exists(file_path):
+            # Redownload if not cached
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            file_path = download_video(url)
+
+        return FileResponse(file_path, media_type="video/mp4", filename=os.path.basename(file_path))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ---------- API & Health ----------
 
 @app.get("/")
 def home():
-    return {"message": "Smart Media Downloader + Telegram Webhook API 🚀"}
+    return {"message": "Smart Media Downloader + Telegram Bot is running 🚀"}
 
 
 @app.get("/download")
-def api_download(url: str):
-    """Optional REST API endpoint for frontend or manual testing."""
+def download_endpoint(url: str):
     try:
-        info = get_media_info(url)
+        info = get_video_info(url)
         return info
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
