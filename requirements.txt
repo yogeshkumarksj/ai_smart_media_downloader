@@ -1,6 +1,6 @@
-fastapi
-uvicorn
-yt-dlp
-instaloader
-python-dateutil
-requests
+fastapi==0.121.0
+uvicorn==0.38.0
+yt-dlp==2025.10.22
+instaloader==4.14.2
+requests==2.32.3
+python-telegram-bot==20.6
