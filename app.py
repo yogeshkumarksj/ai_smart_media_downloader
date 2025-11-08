@@ -73,13 +73,15 @@ def get_media_info(url: str):
 # ========== TELEGRAM WEBHOOK ==========
 
 @app.get("/setwebhook")
-def set_webhook():
+async def set_webhook():
     """Manually call this once to connect Telegram bot to Render server."""
     if not bot:
         return {"error": "TELEGRAM_BOT_TOKEN not set"}
+
     webhook_url = f"{BASE_URL}/webhook"
-    success = bot.set_webhook(webhook_url)
+    success = await bot.set_webhook(webhook_url)
     return {"success": success, "webhook_url": webhook_url}
+
 
 
 @app.post("/webhook")
@@ -169,3 +171,4 @@ def api_download(url: str):
         return info
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
